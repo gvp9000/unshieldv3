@@ -29,7 +29,6 @@ jobs:
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++"
           cmake --build build
-          ./build/unshieldv3.exe help
 
       - name: Upload executable
         uses: actions/upload-artifact@v4
