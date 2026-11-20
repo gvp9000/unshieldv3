@@ -168,12 +168,43 @@ std::vector<uint8_t> ISArchiveV3::decompress(const std::string& full_path) {
     }
     const File* file = fileByPath(full_path);
     assert(file != nullptr);
-    fin.seekg(file->offset, std::ios::beg);
-    std::vector<unsigned char> buf(file->compressed_size);
+    std::vector<unsigned char> buf;
     std::vector<unsigned char> out;
-    fin.read(reinterpret_cast<char*>(&buf[0]), file->compressed_size);
-    if (fin.fail()) {
-        throw std::runtime_error("Read failed");
+    if (hdr.is_multivolume) {
+        // Each DATA.N has its own header and table; split streams are not contiguous.
+        if (!file->volume_start || file->volume_end < file->volume_start)
+            throw std::runtime_error("Invalid volume range");
+        for (unsigned n = file->volume_start; n <= file->volume_end; ++n) {
+            const auto part_path = m_path.parent_path() /
+                (m_path.stem().string() + "." + std::to_string(n));
+            std::ifstream part(part_path, std::ios::binary);
+            if (!part) throw std::runtime_error("Cannot open volume: " + part_path.string());
+            Header part_hdr{};
+            part.read(reinterpret_cast<char*>(&part_hdr), sizeof(part_hdr));
+            if (!part || part_hdr.signature1 != hdr.signature1 ||
+                part_hdr.signature2 != hdr.signature2 || part_hdr.volume_number != n)
+                throw std::runtime_error("Invalid volume: " + part_path.string());
+
+            const uint64_t begin = (n == file->volume_start) ? file->offset : 255;
+            const uint64_t end = !file->is_split ? begin + file->compressed_size :
+                (n == file->volume_end ? part_hdr.split_end_address : part_hdr.toc_address);
+            const uint64_t part_size = fs::file_size(part_path);
+            if (end < begin || end > part_size)
+                throw std::runtime_error("Invalid volume data range: " + part_path.string());
+            const auto old_size = buf.size();
+            buf.resize(old_size + (end - begin));
+            part.seekg(begin, std::ios::beg);
+            part.read(reinterpret_cast<char*>(buf.data() + old_size), end - begin);
+            if (!part) throw std::runtime_error("Read failed: " + part_path.string());
+        }
+        if (buf.size() != file->compressed_size)
+            throw std::runtime_error("Compressed size mismatch: " + file->full_path);
+    } else {
+        buf.resize(file->compressed_size);
+        fin.clear();
+        fin.seekg(file->offset, std::ios::beg);
+        fin.read(reinterpret_cast<char*>(buf.data()), buf.size());
+        if (!fin) throw std::runtime_error("Read failed");
     }
 
     if (file->attrib & File::Attributes::UNCOMPRESSED) {
